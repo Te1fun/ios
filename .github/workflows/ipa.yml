@@ -6,7 +6,7 @@ on:
       git_ref:
         description: "ipatool-Stand: main, ein Tag oder refs/pull/507/head"
         required: true
-        default: "main"
+        default: "refs/pull/507/head"
       auth_code:
         description: "2FA-Code (nur eintragen, wenn Apple einen verlangt)"
         required: false
@@ -57,6 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           cd src
+          echo "Stand: ${{ inputs.git_ref }}"
           echo "Commit: $(git log -1 --oneline)"
           CGO_ENABLED=1 go build -o "$GITHUB_WORKSPACE/ipatool" .
           cd "$GITHUB_WORKSPACE"
@@ -64,7 +65,8 @@ jobs:
 
       - name: Login bei Apple
         run: |
-          set -uo pipefail
+          set +e
+          set -o pipefail
           if [ -n "$AUTH_CODE" ]; then
             ./ipatool auth login --email "$APPLE_ID" --password "$APPLE_PASSWORD" \
               --auth-code "$AUTH_CODE" --non-interactive 2>&1 | tee /tmp/login.log
@@ -75,12 +77,15 @@ jobs:
           RC=${PIPESTATUS[0]}
           if [ "$RC" -ne 0 ]; then
             if grep -qiE "2fa|auth.?code|two.?factor|verification" /tmp/login.log; then
-              echo "Apple verlangt einen 2FA-Code. Starte den Workflow erneut und trage ihn bei auth_code ein."
+              echo "ERGEBNIS: Apple verlangt einen 2FA-Code. Starte den Workflow erneut und trage ihn bei auth_code ein."
+            elif grep -qE "HTTP 301|HTTP 204|HTTP 403|HTTP 404" /tmp/login.log; then
+              echo "ERGEBNIS: Apple lehnt die Anfrage ab, und es ist KEIN 2FA-Hinweis. Dieser ipatool-Stand passt nicht zu Apples aktuellem Login."
             else
-              echo "Login abgelehnt, und es ist KEIN 2FA-Hinweis. Wahrscheinlich passt der Endpunkt oder die Signatur nicht zu diesem ipatool-Stand."
+              echo "ERGEBNIS: Anderer Fehler, siehe Log oben."
             fi
             exit "$RC"
           fi
+          echo "ERGEBNIS: Login erfolgreich."
 
       - name: App zum Account hinzufuegen
         continue-on-error: true
