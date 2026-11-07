@@ -3,8 +3,12 @@ name: Download Brawl Stars IPA
 on:
   workflow_dispatch:
     inputs:
+      git_ref:
+        description: "ipatool-Stand: main, ein Tag oder refs/pull/507/head"
+        required: true
+        default: "main"
       auth_code:
-        description: "2FA-Code (beim ersten Lauf leer lassen)"
+        description: "2FA-Code (nur eintragen, wenn Apple einen verlangt)"
         required: false
         default: ""
       version_id:
@@ -21,11 +25,9 @@ permissions:
 
 jobs:
   download:
-    # Falls macos-15 nicht geht: macos-latest oder macos-15-intel probieren
     runs-on: macos-15
     timeout-minutes: 30
     env:
-      GH_TOKEN: ${{ github.token }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       AUTH_CODE: ${{ inputs.auth_code }}
@@ -39,37 +41,45 @@ jobs:
             exit 1
           fi
 
-      - name: ipatool-sapfix laden und pruefen
+      - name: ipatool-Quellcode holen
+        uses: actions/checkout@v4
+        with:
+          repository: majd/ipatool
+          ref: ${{ inputs.git_ref }}
+          path: src
+
+      - name: Go einrichten
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+
+      - name: ipatool bauen
         run: |
           set -euo pipefail
-          mkdir -p tool && cd tool
-          if [ "$(uname -m)" = "arm64" ]; then ARCH_NAME=arm64; else ARCH_NAME=amd64; fi
-          echo "Architektur: $ARCH_NAME"
-          TAG=$(gh release list --repo maksimryabkin/ipatool-sapfix --limit 1 --json tagName -q '.[0].tagName')
-          echo "Release: $TAG"
-          gh release download "$TAG" --repo maksimryabkin/ipatool-sapfix \
-            --pattern "*macos-${ARCH_NAME}.tar.gz" \
-            --pattern "*macos-${ARCH_NAME}.tar.gz.sha256sum"
-          shasum -a 256 -c ./*macos-${ARCH_NAME}.tar.gz.sha256sum
-          tar -xzf ./*macos-${ARCH_NAME}.tar.gz
-          BIN=$(find . -type f -name "ipatool-*-macos-${ARCH_NAME}" | head -n 1)
-          chmod +x "$BIN"
-          cp "$BIN" "$GITHUB_WORKSPACE/ipatool"
-          "$GITHUB_WORKSPACE/ipatool" --version
+          cd src
+          echo "Commit: $(git log -1 --oneline)"
+          CGO_ENABLED=1 go build -o "$GITHUB_WORKSPACE/ipatool" .
+          cd "$GITHUB_WORKSPACE"
+          ./ipatool --version
 
       - name: Login bei Apple
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if [ -n "$AUTH_CODE" ]; then
             ./ipatool auth login --email "$APPLE_ID" --password "$APPLE_PASSWORD" \
-              --auth-code "$AUTH_CODE" --non-interactive
+              --auth-code "$AUTH_CODE" --non-interactive 2>&1 | tee /tmp/login.log
           else
             ./ipatool auth login --email "$APPLE_ID" --password "$APPLE_PASSWORD" \
-              --non-interactive || {
-              echo "Login ohne Code fehlgeschlagen. Das ist normal, wenn Apple jetzt einen 2FA-Code schickt."
-              echo "Starte den Workflow erneut und trage den Code bei auth_code ein."
-              exit 1
-            }
+              --non-interactive 2>&1 | tee /tmp/login.log
+          fi
+          RC=${PIPESTATUS[0]}
+          if [ "$RC" -ne 0 ]; then
+            if grep -qiE "2fa|auth.?code|two.?factor|verification" /tmp/login.log; then
+              echo "Apple verlangt einen 2FA-Code. Starte den Workflow erneut und trage ihn bei auth_code ein."
+            else
+              echo "Login abgelehnt, und es ist KEIN 2FA-Hinweis. Wahrscheinlich passt der Endpunkt oder die Signatur nicht zu diesem ipatool-Stand."
+            fi
+            exit "$RC"
           fi
 
       - name: App zum Account hinzufuegen
