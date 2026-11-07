@@ -21,7 +21,8 @@ permissions:
 
 jobs:
   download:
-    runs-on: macos-14
+    # Falls macos-15 nicht geht: macos-latest oder macos-15-intel probieren
+    runs-on: macos-15
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
@@ -42,13 +43,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p tool && cd tool
+          if [ "$(uname -m)" = "arm64" ]; then ARCH_NAME=arm64; else ARCH_NAME=amd64; fi
+          echo "Architektur: $ARCH_NAME"
           TAG=$(gh release list --repo maksimryabkin/ipatool-sapfix --limit 1 --json tagName -q '.[0].tagName')
           echo "Release: $TAG"
           gh release download "$TAG" --repo maksimryabkin/ipatool-sapfix \
-            --pattern '*macos-arm64.tar.gz' --pattern '*macos-arm64.tar.gz.sha256sum'
-          shasum -a 256 -c ./*macos-arm64.tar.gz.sha256sum
-          tar -xzf ./*macos-arm64.tar.gz
-          BIN=$(find . -type f -name 'ipatool-*-macos-arm64' | head -n 1)
+            --pattern "*macos-${ARCH_NAME}.tar.gz" \
+            --pattern "*macos-${ARCH_NAME}.tar.gz.sha256sum"
+          shasum -a 256 -c ./*macos-${ARCH_NAME}.tar.gz.sha256sum
+          tar -xzf ./*macos-${ARCH_NAME}.tar.gz
+          BIN=$(find . -type f -name "ipatool-*-macos-${ARCH_NAME}" | head -n 1)
           chmod +x "$BIN"
           cp "$BIN" "$GITHUB_WORKSPACE/ipatool"
           "$GITHUB_WORKSPACE/ipatool" --version
