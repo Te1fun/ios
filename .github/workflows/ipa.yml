@@ -1,0 +1,111 @@
+name: Download Brawl Stars IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_code:
+        description: "2FA-Code (beim ersten Lauf leer lassen)"
+        required: false
+        default: ""
+      version_id:
+        description: "external-version-id (leer = aktuelle Version)"
+        required: false
+        default: ""
+      bundle_id:
+        description: "Bundle-ID der App"
+        required: true
+        default: "com.supercell.laser"
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      AUTH_CODE: ${{ inputs.auth_code }}
+      VERSION_ID: ${{ inputs.version_id }}
+      BUNDLE_ID: ${{ inputs.bundle_id }}
+    steps:
+      - name: Secrets pruefen
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ]; then
+            echo "Secrets APPLE_ID und APPLE_PASSWORD fehlen."
+            exit 1
+          fi
+
+      - name: ipatool-sapfix laden und pruefen
+        run: |
+          set -euo pipefail
+          mkdir -p tool && cd tool
+          TAG=$(gh release list --repo maksimryabkin/ipatool-sapfix --limit 1 --json tagName -q '.[0].tagName')
+          echo "Release: $TAG"
+          gh release download "$TAG" --repo maksimryabkin/ipatool-sapfix \
+            --pattern '*macos-arm64.tar.gz' --pattern '*macos-arm64.tar.gz.sha256sum'
+          shasum -a 256 -c ./*macos-arm64.tar.gz.sha256sum
+          tar -xzf ./*macos-arm64.tar.gz
+          BIN=$(find . -type f -name 'ipatool-*-macos-arm64' | head -n 1)
+          chmod +x "$BIN"
+          cp "$BIN" "$GITHUB_WORKSPACE/ipatool"
+          "$GITHUB_WORKSPACE/ipatool" --version
+
+      - name: Login bei Apple
+        run: |
+          set -euo pipefail
+          if [ -n "$AUTH_CODE" ]; then
+            ./ipatool auth login --email "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --auth-code "$AUTH_CODE" --non-interactive
+          else
+            ./ipatool auth login --email "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --non-interactive || {
+              echo "Login ohne Code fehlgeschlagen. Das ist normal, wenn Apple jetzt einen 2FA-Code schickt."
+              echo "Starte den Workflow erneut und trage den Code bei auth_code ein."
+              exit 1
+            }
+          fi
+
+      - name: App zum Account hinzufuegen
+        continue-on-error: true
+        run: ./ipatool purchase --bundle-identifier "$BUNDLE_ID" --non-interactive
+
+      - name: Verfuegbare Versionen auflisten
+        continue-on-error: true
+        run: ./ipatool list-versions --bundle-identifier "$BUNDLE_ID" --non-interactive
+
+      - name: IPA herunterladen
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ -n "$VERSION_ID" ]; then
+            ./ipatool download --bundle-identifier "$BUNDLE_ID" \
+              --external-version-id "$VERSION_ID" -o out/brawlstars.ipa --non-interactive
+          else
+            ./ipatool download --bundle-identifier "$BUNDLE_ID" \
+              -o out/brawlstars.ipa --non-interactive
+          fi
+          ls -l out
+
+      - name: Version der IPA anzeigen
+        run: |
+          set -euo pipefail
+          unzip -p out/brawlstars.ipa 'Payload/*.app/Info.plist' > /tmp/Info.plist
+          echo "Version:   $(plutil -extract CFBundleShortVersionString raw -o - /tmp/Info.plist)"
+          echo "Build:     $(plutil -extract CFBundleVersion raw -o - /tmp/Info.plist)"
+          echo "Bundle-ID: $(plutil -extract CFBundleIdentifier raw -o - /tmp/Info.plist)"
+
+      - name: IPA als Artifact hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: brawlstars-ipa
+          path: out/brawlstars.ipa
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Apple-Session beenden
+        if: always()
+        continue-on-error: true
+        run: ./ipatool auth revoke --non-interactive
